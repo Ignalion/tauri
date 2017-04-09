@@ -5,6 +5,7 @@ from functools import partial, wraps
 from queue import Queue, Empty
 from pprint import pformat
 
+import asyncio
 from twisted.internet import reactor
 from twisted.internet.defer import (
     inlineCallbacks, Deferred, returnValue, maybeDeferred, DeferredList)
@@ -19,27 +20,24 @@ time = reactor.seconds
 class TimeoutError(Exception): pass
 
 
-def sleep(t):
-    awaken_later = Deferred()
-    reactor.callLater(t, awaken_later.callback, None)
-    return awaken_later
+# FIXME: Don't know whether there is idiomatic way to use it
+class NeverRaised(Exception): pass
 
 
-@inlineCallbacks
-def _wait(func, interval=0.1, timeout=30, check=lambda _: True,
-          ignore_exc=None, msg=None, raise_on_timeout=True):
+async def _wait(func, interval=0.1, timeout=30, check=lambda _: True,
+          ignore_exc=NeverRaised, msg=None, raise_on_timeout=True):
 
     max_time = time() + timeout
 
     while time() <= max_time:
         try:
-            result = yield func()
+            result = await asyncio.coroutine(func)()
         except ignore_exc:
             pass
         else:
             if check(result):
-                returnValue(result)
-        yield sleep(interval)
+                return result
+        await asyncio.sleep(interval)
     else:
         if raise_on_timeout:
             raise TimeoutError(msg)
@@ -63,7 +61,7 @@ def recur(f, interval=0.1, timeout=30):
     return _wait(f, interval, timeout, lambda _: False, raise_on_timeout=False)
 
 
-def wait_true(func, interval=0.1, timeout=30, ignore_exc=None, msg=None):
+def wait_true(func, interval=0.1, timeout=30, ignore_exc=NeverRaised, msg=None):
     return _wait(func, interval, timeout, bool, ignore_exc, msg=msg)
 
 

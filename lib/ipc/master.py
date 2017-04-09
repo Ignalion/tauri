@@ -4,7 +4,7 @@ import time
 from twisted.internet.task import LoopingCall
 
 from . import get_router, route
-from .util.async import wait_true
+from .util.asyncs import wait_true
 from .util.colls import get_path, del_path
 from .util.funcs import log_exc
 

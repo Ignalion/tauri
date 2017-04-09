@@ -13,7 +13,7 @@ from lib.ipc import router
 from lib.ipc.proxy import apply
 from lib.ipc.gateways import basegw
 from lib.ipc.route import normalize
-from lib.ipc.util import async
+from lib.ipc.util import asyncs
 
 
 from lib.ipc.gateways import pikagw
@@ -74,12 +74,12 @@ class CommandMock(object):
 
     @inlineCallbacks
     def delayed(self, timeout, value):
-        yield async.sleep(timeout)
+        yield asyncs.sleep(timeout)
         returnValue(value)
 
     @inlineCallbacks
     def delayed_error(self, timeout):
-        yield async.sleep(timeout)
+        yield asyncs.sleep(timeout)
         returnValue(1/0)
 
     def immediate(self, value):
@@ -110,7 +110,7 @@ def init_router(component, pid=None, exch=None, local=False):
         @inlineCallbacks
         def sleep(t):
             r.stop()
-            yield async.sleep(t)
+            yield asyncs.sleep(t)
             r.start()
         r.handlers.sleep = sleep
         r.handlers.reactor = reactor
@@ -130,7 +130,7 @@ def pika_router():
     Process(target=init_router, args=('remote', 0, 'PIKA_IPC_TEST')).start()
     Process(target=init_router, args=('remote', 1, 'PIKA_IPC_TEST')).start()
     r = init_router('local', exch='PIKA_IPC_TEST', local=True)
-    pytest.blockon(async.wait_true(lambda: r.ready))
+    pytest.blockon(asyncs.wait_true(lambda: r.ready))
     remote0 = normalize(r, 'remote:0')
     remote1 = normalize(r, 'remote:1')
     pytest.blockon(r.wait(remote0, 100))

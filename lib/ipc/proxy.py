@@ -4,7 +4,7 @@ from functools import partial
 from twisted.internet.defer import inlineCallbacks, returnValue, gatherResults
 from twisted.internet.defer import maybeDeferred
 
-from .util.async import blockingDeferredCall
+from .util.asyncs import blockingDeferredCall
 from .util.funcs import repr_args
 from .util.colls import map_dict
 from .util.types import OpFunctor

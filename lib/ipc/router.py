@@ -14,7 +14,7 @@ from twisted.internet.task import LoopingCall
 from twisted.internet.threads import deferToThread
 
 from .proxy import Proxy, Operation, BlockingProxy
-from .util import async
+from .util import asyncs
 from .util.colls import flatten
 from .util.types import Namespace, ReprHook
 
@@ -80,7 +80,7 @@ class Router(object):
         if not self.running:
             logging.debug('Starting %s' % self.__class__.__name__)
             self.running = True
-            yield async.wait_true(lambda: self.ready)
+            yield asyncs.wait_true(lambda: self.ready)
             self._heartbeat_loop.start(self.heartbeat_interval)
 
     def stop(self):
@@ -159,8 +159,8 @@ class Router(object):
         Returns:
             Deferred.
         """
-        return async.wait_true(self.proxy(route).router.ready.__send__,
-                               timeout=timeout, ignore_exc=HeartbeatError)
+        return asyncs.wait_true(self.proxy(route).router.ready.__send__,
+                                timeout=timeout, ignore_exc=HeartbeatError)
 
     # chanel interface:
 
@@ -320,7 +320,7 @@ def _return(request):
 
 class BlockingRouter(Router):
 
-    @async.blockingDeferredCall
+    @asyncs.blockingDeferredCall
     def start(self, *args, **kwargs):
         if not reactor.running:
             thread = Thread(target=reactor.run, args=(False,))
@@ -337,7 +337,7 @@ class BlockingRouter(Router):
     def proxy(self, route, **kwargs):
         return BlockingProxy(partial(self.request, route, **kwargs))
 
-    @async.blockingDeferredCall
+    @asyncs.blockingDeferredCall
     def request(self, *args, **kw):
         return maybeDeferred(super(BlockingRouter, self).request, *args, **kw)
 
@@ -347,7 +347,7 @@ class ThreadingRouter(Router):
     def _eval_in_thread(self, op):
         x = op.__eval__(self.handlers)
         if isinstance(x, Deferred):
-            x = async.blockOnDeferred(x)
+            x = asyncs.blockOnDeferred(x)
         return x
 
     def _eval_operation(self, op):
