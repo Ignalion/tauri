@@ -4,12 +4,12 @@ import traceback
 
 import pika
 from twisted.internet.defer import inlineCallbacks
-from twisted.internet.task import LoopingCall
 from pika.adapters.twisted_connection import TwistedConnection
 
 from .basegw import BaseGateway
 from ..route import subroutes
 from ..router import MTYPE
+from ..util.asyncs import LoopingCall
 from ..util.types import enum2dict
 from ..util.colls import swap
 
@@ -131,4 +131,4 @@ class LoopingPikaGateway(BasePikaGateway):
 if BigWorld:
     PikaGateway = LoopingPikaGateway
 else:
-    PikaGateway = TwistedPikaGateway
+    PikaGateway = LoopingPikaGateway

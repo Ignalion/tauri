@@ -1,3 +1,4 @@
+import asyncio
 import atexit
 import pickle
 import logging
@@ -7,11 +8,6 @@ from copy import deepcopy
 from functools import partial
 from threading import Thread
 from time import time
-
-from twisted.internet import reactor
-from twisted.internet.defer import Deferred, maybeDeferred, inlineCallbacks
-from twisted.internet.task import LoopingCall
-from twisted.internet.threads import deferToThread
 
 from .proxy import Proxy, Operation, BlockingProxy
 from .util import asyncs
@@ -67,20 +63,21 @@ class Router(object):
         self.master = master
         self.running = False
         self.heartbeat_interval = HEARTBEAT_INTERVAL
-        self._heartbeat_loop = LoopingCall(self._heartbeat)
+        self._heartbeat_loop = asyncs.LoopingCall(self._heartbeat)
 
         self.handlers = Namespace()
         self.handlers.router = self
 
     # process interface:
 
-    @inlineCallbacks
-    def start(self):
+    async def start(self):
         """Start processing incoming messages."""
         if not self.running:
             logging.debug('Starting %s' % self.__class__.__name__)
             self.running = True
-            yield asyncs.wait_true(lambda: self.ready)
+            await asyncs.wait_true(lambda: self.ready)
+            logging.debug('%s is started on %s', self.__class__.__name__,
+                          self.gw.route)
             self._heartbeat_loop.start(self.heartbeat_interval)
 
     def stop(self):
@@ -136,18 +133,19 @@ class Router(object):
             self.gw.send(route, MTYPE.ONESHOT, body)
         else:
             uid = str(uuid.uuid4())
+            loop = asyncio.get_event_loop()
             self.sent[uid] = {
-                'deferred': Deferred(),
+                'future': asyncio.Future(),
                 'heartbeat': time(),
                 'targets': targets,
                 'multi': multi,
                 'responses': [],
                 'on_timeout': timeout and
-                reactor.callLater(timeout, self._on_timeout, uid)
+                loop.call_later(timeout, self._on_timeout, uid)
             }
             body = (uid, op, metadata) if not old else (uid, op)
             self.gw.send(route, MTYPE.REQUEST, body)
-            return self.sent[uid]['deferred']
+            return self.sent[uid]['future']
 
     def wait(self, route, timeout):
         """Wait for the route to appear.
@@ -181,9 +179,11 @@ class Router(object):
             if message_type == MTYPE.REQUEST:
                 self.processing.setdefault(requester, set()).add(uid)
                 self.processing_metadata[uid] = metadata
-                d = maybeDeferred(self._eval_operation, op)
-                d.addCallbacks(_recv_callback, _recv_errback)
-                d.addCallback(self._send_back, requester, uid, metadata)
+                cor = asyncio.coroutine(self._eval_operation)
+                f = asyncio.ensure_future(cor(op))
+                send_f = lambda fut: asyncio.ensure_future(
+                    self._send_back(fut, requester, uid, metadata))  # FIXME
+                f.add_done_callback(send_f)
             elif message_type == MTYPE.ONESHOT:
                 try:
                     self._eval_operation(op)
@@ -223,26 +223,30 @@ class Router(object):
             return ~ result
         return result
 
-    def _send_back(self, result, requester, uid, metadata, as_errback=False):
-        del self.processing_metadata[uid]
+    async def _send_back(self, fut, requester, uid, metadata):
+        result = _recv_callback(fut)
         back_proxy = self.proxy(requester, oneshot=True, metadata=metadata)
-        d = ~ back_proxy.router.on_response(uid, result)
-        d.addCallback(lambda _: self.processing[requester].remove(uid))
-        if not as_errback:
-            d.addErrback(
-                lambda f: self._send_back(_recv_errback(f), requester,
-                                          uid, metadata, True))
+        try:
+            await (~ back_proxy.router.on_response(uid, result))
+        except Exception as e:
+            await (~ back_proxy.router.on_response(uid, _recv_callback(
+                asyncio.Future().set_exception(e)
+            )))
+        finally:
+            del self.processing_metadata[uid]
+            self.processing[requester].remove(uid)
 
     def _on_timeout(self, uid):
         if uid in self.sent:
             req = self.sent.pop(uid)
-            req['deferred'].errback(TimeoutError('Request timed out',
-                                                 *req['responses']))
+            req['future'].set_exception(TimeoutError('Request timed out',
+                                                     *req['responses']))
 
     def _heartbeat(self):
         # notify master of our presence (if any)
         if self.master:
-            ~ self.proxy(self.master, **HB_KWARGS).master.notify(self.gw.route)
+            asyncio.ensure_future(
+                ~ self.proxy(self.master, **HB_KWARGS).master.notify(self.gw.route))
 
         # send heartbeats for requests being processed by us
         for requester, uids in self.processing.items():
@@ -251,7 +255,8 @@ class Router(object):
                 if any(m.get('old_protocol')
                        for m in [self.processing_metadata[uid] for uid in uids]):
                     kwargs['metadata']['old_protocol'] = True
-                ~ self.proxy(requester, **kwargs).router.on_heartbeat(uids)
+                asyncio.ensure_future(
+                    ~ self.proxy(requester, **kwargs).router.on_heartbeat(uids))
 
         # check our own requests for some missed heartbeats
         now = time()
@@ -260,7 +265,7 @@ class Router(object):
                 logging.warning('Response is overdue %s seconds',
                                 (now - request['heartbeat']))
             if now > request['heartbeat'] + HEARTBEAT_ERROR:
-                request['deferred'].errback(HeartbeatError(uid))
+                request['future'].set_exception(HeartbeatError(uid))
                 del self.sent[uid]
 
 
@@ -285,37 +290,36 @@ def _extract_result(result):
         raise ValueError('Unknown response code')
 
 
-def _recv_callback(r):
-    return RESPONSE.OK, r
-
-
-def _recv_errback(f):
-    if not isinstance(f.value, NoResponse):
-        logging.critical(f)
-    return RESPONSE.ERROR, (pickle.dumps(f.value), f.getTraceback())
+def _recv_callback(fut):
+    if fut.exception() is None:
+        return RESPONSE.OK, fut.result()
+    else:
+        if not isinstance(fut.exception, NoResponse):
+            logging.critical(fut.exception())
+        return RESPONSE.ERROR, (pickle.dumps(fut.exception()))
 
 
 def _return(request):
-    d = request['deferred']
+    fut = request['future']
     responses = request['responses']
     if not request['multi']:
         results = list(filter(_is_response, responses))
         if len(results) == 0:
-            d.errback(NoResponse())
+            fut.set_exception(NoResponse())
         elif len(results) > 1 and any(r != results[0] for r in results[1:]):
-            d.errback(MultipleResponse(*results))
+            fut.set_exception(MultipleResponse(*results))
         else:
             result = results[0]
             if isinstance(result, Exception):
-                d.errback(result)
+                fut.set_exception(result)
             else:
-                d.callback(result)
+                fut.set_result(result)
     else:
         if any(isinstance(r, Exception) for r in responses):
-            d.errback(RemoteException(responses))
+            fut.set_exception(RemoteException(responses))
         else:
             iterize = lambda x: x if isinstance(x, list) else [x]
-            d.callback(flatten(list(map(iterize, responses))))
+            fut.set_result(flatten(list(map(iterize, responses))))
 
 
 class BlockingRouter(Router):

@@ -42,6 +42,24 @@ async def _wait(func, interval=0.1, timeout=30, check=lambda _: True,
         if raise_on_timeout:
             raise TimeoutError(msg)
 
+class LoopingCall:
+    def __init__(self, func):
+        self.func = func
+
+    async def _start(self, interval):
+        while True:
+            try:
+                await asyncio.coroutine(self.func)()
+            except Exception as e:
+                logging.exception(e)
+            await asyncio.sleep(interval)
+
+    def start(self, interval):
+        self.fut = asyncio.ensure_future(self._start(interval))
+
+    def stop(self):
+        self.fut.cancel()
+
 
 @inlineCallbacks
 def collect(f, interval=0.1, timeout=None, count=None):

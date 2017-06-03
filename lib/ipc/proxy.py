@@ -1,8 +1,9 @@
+import asyncio
 import operator
 from functools import partial
 
-from twisted.internet.defer import inlineCallbacks, returnValue, gatherResults
-from twisted.internet.defer import maybeDeferred
+# from twisted.internet.defer import inlineCallbacks, returnValue, gatherResults
+# from twisted.internet.defer import maybeDeferred
 
 from .util.asyncs import blockingDeferredCall
 from .util.funcs import repr_args
@@ -34,16 +35,17 @@ class Operation(object):
         return get(self.__f)(*list(map(get, self.__args)),
                              **map_dict(get, self.__kwargs))
 
-    @inlineCallbacks
-    def __update__(self, f):
-        upd = partial(
-            maybeDeferred,
-            lambda x: x.__update__(f) if isinstance(x, self.__class__) else f(x))
-        f_ = yield upd(self.__f)
-        args = yield gatherResults(list(map(upd, self.__args)))
-        kw_values = yield gatherResults(list(map(upd, list(self.__kwargs.values()))))
+    async def __update__(self, f):
+        def upd(func):
+            _f = partial(
+                lambda x: x.__update__(f) if isinstance(x, self.__class__) else f(x),
+                func)
+            return asyncio.coroutine(_f)()
+        f_ = await upd(self.__f)
+        args = await asyncio.gather(*list(map(upd, self.__args)))
+        kw_values = await asyncio.gather(*list(map(upd, list(self.__kwargs.values()))))
         kwargs = dict(list(zip(self.__kwargs, kw_values)))
-        returnValue(self.__class__(f_, *args, **kwargs))
+        return self.__class__(f_, *args, **kwargs)
 
     def __repr__(self):
         try:
@@ -77,10 +79,10 @@ class Proxy(OpFunctor):
     def __wrap__(self, *args, **kwargs):
         return self.__class__(self.__target__, Operation(*args, **kwargs))
 
-    def __send__(self, **kwargs):
-        op = self.__op__.__update__(partial(_un_proxy, self))
-        op.addCallback(self.__target__, **kwargs)
-        return op
+    async def __send__(self, **kwargs):
+        op = await self.__op__.__update__(partial(_un_proxy, self))
+        cor = asyncio.coroutine(self.__target__)(op, **kwargs)
+        return await cor
 
     def __invert__(self):
         return self.__send__()

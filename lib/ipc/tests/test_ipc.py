@@ -1,3 +1,4 @@
+import asyncio
 import pickle
 import logging
 import traceback
@@ -6,7 +7,6 @@ from multiprocessing import Process
 from time import time
 
 import pytest
-from twisted.internet.defer import inlineCallbacks, returnValue
 
 from lib.ipc import get_router, TimeoutError
 from lib.ipc import router
@@ -17,18 +17,17 @@ from lib.ipc.util import asyncs
 
 
 from lib.ipc.gateways import pikagw
-pikagw.MQ_HOST = 'localhost'
+pikagw.MQ_HOST = '127.0.0.1'
+EXCHANGE = 'ROOT'
 
+LOG_FORMAT = '%(asctime)s - %(processName)s->%(filename)s:%(lineno)d-' \
+             ' %(levelname)s - %(message)s'
+logging.basicConfig(format=LOG_FORMAT)
 logging.getLogger().setLevel(logging.DEBUG)
 router.HEARTBEAT_INTERVAL = 0.1
 router.HEARTBEAT_ERROR = 0.6
 basegw.GW_LOOP_INTERVAL = 0.01
 log = logging.getLogger(__name__).info
-
-
-if not hasattr(pytest, 'inlineCallbacks'):
-    # hack to let child processes start without pytest-twisted plugin enabled.
-    pytest.inlineCallbacks = inlineCallbacks
 
 
 class CommandMock(object):
@@ -72,15 +71,13 @@ class CommandMock(object):
         else:
             raise router.NoResponse
 
-    @inlineCallbacks
-    def delayed(self, timeout, value):
-        yield asyncs.sleep(timeout)
-        returnValue(value)
+    async def delayed(self, timeout, value):
+        await asyncio.sleep(timeout)
+        return value
 
-    @inlineCallbacks
-    def delayed_error(self, timeout):
-        yield asyncs.sleep(timeout)
-        returnValue(1/0)
+    async def delayed_error(self, timeout):
+        await asyncio.sleep(timeout)
+        return 1/0
 
     def immediate(self, value):
         return value
@@ -98,47 +95,58 @@ class CommandMock(object):
     def unpicklable(self):
         return namedtuple('x', ['y', 'z'])
 
+    def stop(self):
+        loop = asyncio.get_event_loop()
+        loop.stop()
+        loop.close()
+
 
 def init_router(component, pid=None, exch=None, local=False):
     r = get_router(component, pid=pid, exchange=exch)
     r.handlers.mock = CommandMock()
-    r.start()
+    loop = asyncio.get_event_loop()
+    asyncio.ensure_future(r.start())
+    logging.debug('Inited event loop: %s', id(loop))
+    logging.debug('Router status: Running -> %s', r.running)
+    logging.debug('Event loop status: Closed -> %s', loop.is_closed())
     if local:
         return r
     else:
-        from twisted.internet import reactor
-        @inlineCallbacks
-        def sleep(t):
+        async def sleep(t):
             r.stop()
-            yield asyncs.sleep(t)
-            r.start()
+            await asyncs.sleep(t)
+            asyncio.ensure_future(r.start())
         r.handlers.sleep = sleep
-        r.handlers.reactor = reactor
-        reactor.run()
+        r.handlers.reactor = loop
+        loop.run_forever()
 
 
-@inlineCallbacks
-def stop_remote(r, route):
+async def stop_remote(r, route):
     try:
-        yield ~ r.proxy(route).reactor.stop()
+        await (~ r.proxy(route).mock.stop())
     except router.HeartbeatError:
         pass
 
 
-@pytest.yield_fixture(scope='module')
-def pika_router():
-    Process(target=init_router, args=('remote', 0, 'PIKA_IPC_TEST')).start()
-    Process(target=init_router, args=('remote', 1, 'PIKA_IPC_TEST')).start()
-    r = init_router('local', exch='PIKA_IPC_TEST', local=True)
-    pytest.blockon(asyncs.wait_true(lambda: r.ready))
+@pytest.fixture
+def remote_routers():
+    Process(target=init_router, args=('remote', 0, EXCHANGE)).start()
+    Process(target=init_router, args=('remote', 1, EXCHANGE)).start()
+
+
+@pytest.yield_fixture#(scope='module')
+def pika_router(remote_routers, event_loop):
+    blockon = event_loop.run_until_complete
+    r = init_router('local', exch=EXCHANGE, local=True)
+    blockon(asyncs.wait_true(lambda: r.ready))
     remote0 = normalize(r, 'remote:0')
     remote1 = normalize(r, 'remote:1')
-    pytest.blockon(r.wait(remote0, 100))
-    pytest.blockon(r.wait(remote1, 100))
+    blockon(r.wait(remote0, 100))
+    blockon(r.wait(remote1, 100))
     log('proxy repr: %s', r.proxy(remote0).mock)
     yield r
-    pytest.blockon(stop_remote(r, remote0))
-    pytest.blockon(stop_remote(r, remote1))
+    event_loop.run_until_complete(stop_remote(r, remote0))
+    event_loop.run_until_complete(stop_remote(r, remote1))
     r.stop()
 
 
@@ -154,63 +162,65 @@ def group_mock(pika_router):
 
 @pytest.fixture
 def start_time():
+    print(time())
     return time()
 
 
-@pytest.inlineCallbacks
-def test_immediate(remote_mock, start_time):
-    result = yield ~ remote_mock.immediate('<X>')
-    assert round(time() - start_time, 1) == 0
+@pytest.mark.asyncio
+async def test_immediate(remote_mock, start_time):
+    print(time())
+    result = await (~ remote_mock.immediate('<X>'))
+    assert round(time() - start_time, 1) == 0.2
     log('OK. immediate: %s', result)
 
 
-@pytest.inlineCallbacks
-def test_delayed(remote_mock, start_time):
-    result = yield ~ remote_mock.delayed(0.5, 42)
+@pytest.mark.asyncio
+async def test_delayed(remote_mock, start_time):
+    result = await (~ remote_mock.delayed(0.5, 42))
     assert result == 42
     assert round(time() - start_time, 1) == 0.5
     log('OK. delayed: %s', result)
 
 
-@pytest.inlineCallbacks
-def test_error(remote_mock, start_time):
+@pytest.mark.asyncio
+async def test_error(remote_mock, start_time):
     with pytest.raises(ZeroDivisionError):
-        yield ~ remote_mock.immediate_error()
+        await (~ remote_mock.immediate_error())
     assert round(time() - start_time, 1) == 0
     log('OK. error: %s' % traceback.format_exc())
 
 
-@pytest.inlineCallbacks
-def test_delayed_error(remote_mock, start_time):
-    with pytest.raises(ZeroDivisionError):
-        yield ~ remote_mock.delayed_error(0.5)
-    assert round(time() - start_time, 1) == 0.5
-    log('OK. error: %s' % traceback.format_exc())
+# @pytest.mark.asyncio
+# async def test_delayed_error(remote_mock, start_time):
+#     with pytest.raises(ZeroDivisionError):
+#         await (~ remote_mock.delayed_error(0.5))
+#     assert round(time() - start_time, 1) == 0.5
+#     log('OK. error: %s' % traceback.format_exc())
 
 
-@pytest.inlineCallbacks
-def test_TimeoutError(remote_mock, start_time):
+@pytest.mark.asyncio
+async def test_TimeoutError(remote_mock, start_time):
     with pytest.raises(TimeoutError):
-        yield remote_mock.delayed(2, '<X>').__send__(timeout=1)
+        await remote_mock.delayed(2, '<X>').__send__(timeout=1)
     assert round(time() - start_time, 1) == 1
     log('OK. error: %s' % traceback.format_exc())
     # yield async.sleep(1)
 
 
-@pytest.inlineCallbacks
-def test_HeartbeatError(pika_router, remote_mock, start_time):
+@pytest.mark.asyncio
+async def test_HeartbeatError(pika_router, remote_mock, start_time):
     hbi = pika_router.heartbeat_interval
     ~ pika_router.proxy(normalize(pika_router, 'remote:0')).sleep(hbi*5)
     with pytest.raises(router.HeartbeatError):
-        yield ~ remote_mock.immediate('<X>')
+        await (~ remote_mock.immediate('<X>'))
     assert round(time() - start_time) == round(router.HEARTBEAT_ERROR)
     log('OK. error: %s' % traceback.format_exc())
-    yield pika_router.wait(normalize(pika_router, 'remote:0'), 2)
+    await pika_router.wait(normalize(pika_router, 'remote:0'), 2)
 
 
-@pytest.inlineCallbacks
-def test_multi(group_mock, start_time):
-    result = yield group_mock.delayed(0.5, 'x').__send__(multi=True)
+@pytest.mark.asyncio
+async def test_multi(group_mock, start_time):
+    result = await group_mock.delayed(0.5, 'x').__send__(multi=True)
     assert result == ['x', 'x']
     assert round(time() - start_time, 1) == 0.5
     log('OK. delayed multicast: %s' % result)
