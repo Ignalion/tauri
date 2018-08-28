@@ -2,8 +2,6 @@ import asyncio
 import operator
 from functools import partial
 
-# from twisted.internet.defer import inlineCallbacks, returnValue, gatherResults
-# from twisted.internet.defer import maybeDeferred
 
 from .util.asyncs import blockingDeferredCall
 from .util.funcs import repr_args
@@ -94,10 +92,10 @@ class Proxy(OpFunctor):
         if key in self.__slots__:
             object.__setattr__(self, key, value)
         else:
-            apply(setattr, self, key, value).__send__()
+            asyncio.ensure_future(apply(setattr, self, key, value).__send__())
 
     def __setitem__(self, key, value):
-        apply(operator.setitem, self, key, value).__send__()
+        asyncio.ensure_future(apply(operator.setitem, self, key, value).__send__())
 
 
 class BlockingProxy(Proxy):

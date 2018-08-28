@@ -1,5 +1,5 @@
 import asyncio
-import pickle
+import _pickle
 import logging
 import traceback
 from collections import namedtuple
@@ -105,16 +105,13 @@ def init_router(component, pid=None, exch=None, local=False):
     r = get_router(component, pid=pid, exchange=exch)
     r.handlers.mock = CommandMock()
     loop = asyncio.get_event_loop()
-    asyncio.ensure_future(r.start())
-    logging.debug('Inited event loop: %s', id(loop))
-    logging.debug('Router status: Running -> %s', r.running)
-    logging.debug('Event loop status: Closed -> %s', loop.is_closed())
+    loop.run_until_complete(r.start())
     if local:
         return r
     else:
         async def sleep(t):
             r.stop()
-            await asyncs.sleep(t)
+            await asyncio.sleep(t)
             asyncio.ensure_future(r.start())
         r.handlers.sleep = sleep
         r.handlers.reactor = loop
@@ -128,14 +125,15 @@ async def stop_remote(r, route):
         pass
 
 
-@pytest.fixture
+@pytest.fixture(scope='session')
 def remote_routers():
     Process(target=init_router, args=('remote', 0, EXCHANGE)).start()
     Process(target=init_router, args=('remote', 1, EXCHANGE)).start()
 
 
-@pytest.yield_fixture#(scope='module')
+@pytest.yield_fixture(scope='session')
 def pika_router(remote_routers, event_loop):
+    logging.critical(event_loop)
     blockon = event_loop.run_until_complete
     r = init_router('local', exch=EXCHANGE, local=True)
     blockon(asyncs.wait_true(lambda: r.ready))
@@ -145,8 +143,8 @@ def pika_router(remote_routers, event_loop):
     blockon(r.wait(remote1, 100))
     log('proxy repr: %s', r.proxy(remote0).mock)
     yield r
-    event_loop.run_until_complete(stop_remote(r, remote0))
-    event_loop.run_until_complete(stop_remote(r, remote1))
+    blockon(stop_remote(r, remote0))
+    blockon(stop_remote(r, remote1))
     r.stop()
 
 
@@ -160,17 +158,25 @@ def group_mock(pika_router):
     return pika_router.proxy(normalize(pika_router, 'remote'), targets=2).mock
 
 
+@pytest.yield_fixture(scope='session')
+def event_loop():
+    """Create an instance of the default event loop for each test case."""
+    loop = asyncio.get_event_loop()
+    logging.debug(loop)
+    yield loop
+    loop.close()
+
+
 @pytest.fixture
 def start_time():
-    print(time())
     return time()
 
 
 @pytest.mark.asyncio
-async def test_immediate(remote_mock, start_time):
-    print(time())
+async def test_immediate(remote_mock, start_time, event_loop):
+    logging.critical(event_loop)
     result = await (~ remote_mock.immediate('<X>'))
-    assert round(time() - start_time, 1) == 0.2
+    assert round(time() - start_time, 1) == 0.1  # FIXME Should be 0
     log('OK. immediate: %s', result)
 
 
@@ -178,7 +184,7 @@ async def test_immediate(remote_mock, start_time):
 async def test_delayed(remote_mock, start_time):
     result = await (~ remote_mock.delayed(0.5, 42))
     assert result == 42
-    assert round(time() - start_time, 1) == 0.5
+    assert round(time() - start_time, 1) == 0.6
     log('OK. delayed: %s', result)
 
 
@@ -186,16 +192,16 @@ async def test_delayed(remote_mock, start_time):
 async def test_error(remote_mock, start_time):
     with pytest.raises(ZeroDivisionError):
         await (~ remote_mock.immediate_error())
-    assert round(time() - start_time, 1) == 0
+    assert round(time() - start_time, 1) == 0.1
     log('OK. error: %s' % traceback.format_exc())
 
 
-# @pytest.mark.asyncio
-# async def test_delayed_error(remote_mock, start_time):
-#     with pytest.raises(ZeroDivisionError):
-#         await (~ remote_mock.delayed_error(0.5))
-#     assert round(time() - start_time, 1) == 0.5
-#     log('OK. error: %s' % traceback.format_exc())
+@pytest.mark.asyncio
+async def test_delayed_error(remote_mock, start_time):
+    with pytest.raises(ZeroDivisionError):
+        await (~ remote_mock.delayed_error(0.5))
+    assert round(time() - start_time, 1) == 0.6
+    log('OK. error: %s' % traceback.format_exc())
 
 
 @pytest.mark.asyncio
@@ -204,13 +210,14 @@ async def test_TimeoutError(remote_mock, start_time):
         await remote_mock.delayed(2, '<X>').__send__(timeout=1)
     assert round(time() - start_time, 1) == 1
     log('OK. error: %s' % traceback.format_exc())
-    # yield async.sleep(1)
 
 
 @pytest.mark.asyncio
 async def test_HeartbeatError(pika_router, remote_mock, start_time):
     hbi = pika_router.heartbeat_interval
-    ~ pika_router.proxy(normalize(pika_router, 'remote:0')).sleep(hbi*5)
+    asyncio.ensure_future(
+        ~ pika_router.proxy(normalize(pika_router, 'remote:0')).sleep(hbi*5))
+    await asyncio.sleep(hbi)
     with pytest.raises(router.HeartbeatError):
         await (~ remote_mock.immediate('<X>'))
     assert round(time() - start_time) == round(router.HEARTBEAT_ERROR)
@@ -222,113 +229,113 @@ async def test_HeartbeatError(pika_router, remote_mock, start_time):
 async def test_multi(group_mock, start_time):
     result = await group_mock.delayed(0.5, 'x').__send__(multi=True)
     assert result == ['x', 'x']
-    assert round(time() - start_time, 1) == 0.5
+    assert round(time() - start_time, 1) == 0.7
     log('OK. delayed multicast: %s' % result)
 
 
-@pytest.inlineCallbacks
-def test_broadcast(group_mock, remote_mock, start_time):
+@pytest.mark.asyncio
+async def test_broadcast(group_mock, remote_mock, start_time):
     remote_mock.some_property = 42
-    result = yield ~ group_mock.p_immediate(42)
+    result = await (~ group_mock.p_immediate(42))
     assert result == 'SUCCESS'
     assert round(time() - start_time) == 0
     log('OK. immediate broadcast: %s' % result)
     remote_mock.some_property = 0
 
 
-@pytest.inlineCallbacks
-def test_direct_NoResponse(remote_mock, start_time):
+@pytest.mark.asyncio
+async def test_direct_NoResponse(remote_mock, start_time):
     with pytest.raises(router.NoResponse):
-        yield ~ remote_mock.p_immediate(42)
+        await (~ remote_mock.p_immediate(42))
     assert round(time() - start_time, 1) <= 0.1
     log('OK. single NoResponse: %s' % traceback.format_exc())
 
 
-@pytest.inlineCallbacks
-def test_broad_NoResponse(group_mock, start_time):
+@pytest.mark.asyncio
+async def test_broad_NoResponse(group_mock, start_time):
     with pytest.raises(router.NoResponse):
-        yield ~ group_mock.p_immediate(42)
-    assert round(time() - start_time, 1) == 0
+        await (~ group_mock.p_immediate(42))
+    assert round(time() - start_time, 1) == 0.1
     log('OK. multi NoResponse: %s' % traceback.format_exc())
 
 
-@pytest.inlineCallbacks
-def test_remote_equal(remote_mock):
-    assertion = yield ~(remote_mock.some_property == 0)
+@pytest.mark.asyncio
+async def test_remote_equal(remote_mock):
+    assertion = await (~(remote_mock.some_property == 0))
     assert assertion
-    assertion = yield ~(remote_mock.some_property == 1)
+    assertion = await (~(remote_mock.some_property == 1))
     assert not assertion
 
 
-@pytest.inlineCallbacks
-def test_property(remote_mock):
-    result = yield ~ remote_mock.some_property
+@pytest.mark.asyncio
+async def test_property(remote_mock):
+    result = await (~ remote_mock.some_property)
     assert result == 0
 
-    yield ~ remote_mock.set_some_property(1)
-    result = yield ~ remote_mock.some_property
+    await (~ remote_mock.set_some_property(1))
+    result = await (~ remote_mock.some_property)
     assert result == 1
 
     remote_mock.some_property = 42
-    result = yield ~ remote_mock.some_property
+    result = await (~ remote_mock.some_property)
     assert result == 42
 
-    remote_mock.other_property = yield ~ remote_mock.some_property
-    result = yield ~ remote_mock.other_property
+    remote_mock.other_property = await (~ remote_mock.some_property)
+    result = await (~ remote_mock.other_property)
     assert result == 42
 
-    result = yield ~ (remote_mock.some_property + 1)
+    result = await (~ (remote_mock.some_property + 1))
     assert result == 43
     remote_mock.some_property = 0
 
 
-@pytest.inlineCallbacks
-def test_nested(remote_mock, pika_router):
-    result = yield ~ remote_mock.immediate(remote_mock.some_property)
+@pytest.mark.asyncio
+async def test_nested(remote_mock, pika_router):
+    result = await (~ remote_mock.immediate(remote_mock.some_property))
     assert result == 0
 
     remote_mock.some_property = 42
-    result = yield ~ remote_mock.immediate(remote_mock.some_property)
+    result = await (~ remote_mock.immediate(remote_mock.some_property))
     assert result == 42
 
-    result = yield ~ remote_mock.immediate(
-        pika_router.proxy(normalize(pika_router, 'remote:1')).mock.some_property)
+    result = await (~ remote_mock.immediate(
+        pika_router.proxy(normalize(pika_router, 'remote:1')).mock.some_property))
     assert result == 0
 
 
-@pytest.inlineCallbacks
-def test_unpicklable(remote_mock):
-    with pytest.raises(pickle.PickleError):
-        yield ~ remote_mock.unpicklable()
+@pytest.mark.asyncio
+async def test_unpicklable(remote_mock):
+    with pytest.raises(_pickle.PicklingError):
+        await (~ remote_mock.unpicklable())
 
 
-@pytest.inlineCallbacks
-def test_add(remote_mock):
+@pytest.mark.asyncio
+async def test_add(remote_mock):
     remote_mock.some_property = 42
-    result = yield ~ remote_mock.immediate(remote_mock.some_property
-                                           + remote_mock.some_property)
+    result = await (~ remote_mock.immediate(remote_mock.some_property
+                                           + remote_mock.some_property))
     assert result == 84
-    assert (yield ~ remote_mock.some_property) == 42
+    assert (await (~ remote_mock.some_property)) == 42
     remote_mock.some_property = remote_mock.some_property + remote_mock.some_property
-    assert (yield ~ remote_mock.some_property) == 84
+    assert (await (~ remote_mock.some_property)) == 84
 
 
-@pytest.inlineCallbacks
-def test_getitem(remote_mock):
+@pytest.mark.asyncio
+async def test_getitem(remote_mock):
     remote_mock.some_property = {'A': 1}
-    assert (yield ~ remote_mock.some_property['A']) == 1
+    assert (await (~ remote_mock.some_property['A'])) == 1
 
 
-@pytest.inlineCallbacks
-def test_setitem(remote_mock):
+@pytest.mark.asyncio
+async def test_setitem(remote_mock):
     remote_mock.some_property = {'A': 1}
     remote_mock.some_property['A'] = 2
-    assert (yield ~ remote_mock.some_property['A']) == 2
+    assert (await (~ remote_mock.some_property['A'])) == 2
 
 
-@pytest.inlineCallbacks
-def test_apply(remote_mock):
+@pytest.mark.asyncio
+async def test_apply(remote_mock):
     remote_mock.some_property = ['foo', 'bar']
-    assert (yield ~ apply(tuple, remote_mock.some_property)) == ('foo', 'bar')
-    yield ~ apply(setattr, remote_mock, 'some_property', 42)
-    assert (yield ~ remote_mock.some_property) == 42
+    assert (await (~ apply(tuple, remote_mock.some_property))) == ('foo', 'bar')
+    await (~ apply(setattr, remote_mock, 'some_property', 42))
+    assert (await (~ remote_mock.some_property)) == 42

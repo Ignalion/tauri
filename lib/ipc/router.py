@@ -50,6 +50,25 @@ class TimeoutError(Exception):
     pass
 
 
+class LoopingCall:
+    def __init__(self, func):
+        self.func = func
+
+    async def _start(self, interval):
+        while True:
+            try:
+                await asyncio.coroutine(self.func)()
+            except Exception as e:
+                logging.exception(e)
+            await asyncio.sleep(interval)
+
+    def start(self, interval):
+        self.fut = asyncio.ensure_future(self._start(interval))
+
+    def stop(self):
+        self.fut.cancel()
+
+
 class Router(object):
 
     def __init__(self, gateway, master=None):
@@ -63,7 +82,7 @@ class Router(object):
         self.master = master
         self.running = False
         self.heartbeat_interval = HEARTBEAT_INTERVAL
-        self._heartbeat_loop = asyncs.LoopingCall(self._heartbeat)
+        self._heartbeat_loop = LoopingCall(self._heartbeat)
 
         self.handlers = Namespace()
         self.handlers.router = self
@@ -181,9 +200,12 @@ class Router(object):
                 self.processing_metadata[uid] = metadata
                 cor = asyncio.coroutine(self._eval_operation)
                 f = asyncio.ensure_future(cor(op))
+                # d.addCallbacks(_recv_callback, _recv_errback)
                 send_f = lambda fut: asyncio.ensure_future(
                     self._send_back(fut, requester, uid, metadata))  # FIXME
+                # send_f = (self._send_back, requester, uid, metadata))
                 f.add_done_callback(send_f)
+                # d.addCallback(self._send_back, requester, uid, metadata)
             elif message_type == MTYPE.ONESHOT:
                 try:
                     self._eval_operation(op)
@@ -273,6 +295,20 @@ def _is_response(x):
     return not isinstance(x, NoResponse)
 
 
+def _compact_traceback(tb):
+    compact = []
+    skip_next = False
+    for l in tb.splitlines():
+        if skip_next:
+            skip_next = False
+            continue
+        if 'proxy.py' in l:
+            skip_next = True
+            continue
+        compact.append(l)
+    return '\n'.join(compact)
+
+
 def _extract_result(result):
     code, value = result
     if code == RESPONSE.OK:
@@ -294,9 +330,11 @@ def _recv_callback(fut):
     if fut.exception() is None:
         return RESPONSE.OK, fut.result()
     else:
-        if not isinstance(fut.exception, NoResponse):
+        if not isinstance(fut.exception(), NoResponse):
             logging.critical(fut.exception())
-        return RESPONSE.ERROR, (pickle.dumps(fut.exception()))
+        e = fut.exception()
+        tb = ''.join(traceback.format_exception(None, e, e.__traceback__))
+        return RESPONSE.ERROR, (pickle.dumps(e), tb)
 
 
 def _return(request):
