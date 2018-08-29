@@ -37,12 +37,12 @@ class World:
             for obj in self.objects:
                 obj.step()
 
-        # Make grass grow
-        if self._counter == 100:
-            self._counter = 0
-            for i, line in enumerate(self.map):
-                for j, cell in enumerate(line):
-                    if cell == 1:
-                        self.map[i][j] = 2
-        else:
-            self._counter += 1
+            # Make grass grow
+            if self._counter == 100:
+                self._counter = 0
+                for i, line in enumerate(self.map):
+                    for j, cell in enumerate(line):
+                        if cell == MAP['DIRT']:
+                            self.map[i][j] = MAP['GRASS']
+            else:
+                self._counter += 1
