@@ -229,7 +229,7 @@ async def test_HeartbeatError(pika_router, remote_mock, start_time):
 async def test_multi(group_mock, start_time):
     result = await group_mock.delayed(0.5, 'x').__send__(multi=True)
     assert result == ['x', 'x']
-    assert round(time() - start_time, 1) == 0.7
+    assert round(time() - start_time, 1) == 0.6
     log('OK. delayed multicast: %s' % result)
 
 
@@ -277,10 +277,12 @@ async def test_property(remote_mock):
     assert result == 1
 
     remote_mock.some_property = 42
+    await asyncio.sleep(0.1)
     result = await (~ remote_mock.some_property)
     assert result == 42
 
     remote_mock.other_property = await (~ remote_mock.some_property)
+    await asyncio.sleep(0.1)
     result = await (~ remote_mock.other_property)
     assert result == 42
 
@@ -295,6 +297,7 @@ async def test_nested(remote_mock, pika_router):
     assert result == 0
 
     remote_mock.some_property = 42
+    await asyncio.sleep(0.1)
     result = await (~ remote_mock.immediate(remote_mock.some_property))
     assert result == 42
 
@@ -312,11 +315,13 @@ async def test_unpicklable(remote_mock):
 @pytest.mark.asyncio
 async def test_add(remote_mock):
     remote_mock.some_property = 42
+    await asyncio.sleep(0.1)
     result = await (~ remote_mock.immediate(remote_mock.some_property
                                            + remote_mock.some_property))
     assert result == 84
     assert (await (~ remote_mock.some_property)) == 42
     remote_mock.some_property = remote_mock.some_property + remote_mock.some_property
+    await asyncio.sleep(0.1)
     assert (await (~ remote_mock.some_property)) == 84
 
 
@@ -330,6 +335,7 @@ async def test_getitem(remote_mock):
 async def test_setitem(remote_mock):
     remote_mock.some_property = {'A': 1}
     remote_mock.some_property['A'] = 2
+    await asyncio.sleep(0.1)
     assert (await (~ remote_mock.some_property['A'])) == 2
 
 
