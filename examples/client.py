@@ -2,20 +2,22 @@ import asyncio
 import logging
 
 from lib.ipc import get_router
-from lib.ipc.gateways import pikagw
-pikagw.MQ_HOST = '127.0.0.1'
+from lib.ipc.proxy import apply
 
-PEER_ROUTE = 'ipc_test:asyncio'
+MQ_HOST = '127.0.0.1'
+
+PEER_ROUTE = 'game:main'
 
 
 logging.basicConfig(level=logging.DEBUG)
 
+
 async def main():
-    r = get_router('client')
+    r = get_router('client', exchange='ROOT', mq_host=MQ_HOST)
     await r.start()
-    result = await (~r.proxy(PEER_ROUTE).get_42())
+    result = await (~r.proxy(PEER_ROUTE).add_point())
     print('GOT RESULT: %s' % result)
-    result = await (~r.proxy(PEER_ROUTE).get_delayed(1, 45))
+    result = await (~apply(list, r.proxy(PEER_ROUTE).entities))
     print('GOT RESULT: %s' % result)
 
 
