@@ -16,8 +16,7 @@ from lib.ipc.route import normalize
 from lib.ipc.util import asyncs
 
 
-from lib.ipc.gateways import pikagw
-pikagw.MQ_HOST = '127.0.0.1'
+MQ_HOST = '127.0.0.1'
 EXCHANGE = 'ROOT'
 
 LOG_FORMAT = '%(asctime)s - %(processName)s->%(filename)s:%(lineno)d-' \
@@ -101,8 +100,8 @@ class CommandMock(object):
         loop.close()
 
 
-def init_router(component, pid=None, exch=None, local=False):
-    r = get_router(component, pid=pid, exchange=exch)
+def init_router(component, pid=None, local=False):
+    r = get_router(component, pid=pid, exchange=EXCHANGE, mq_host=MQ_HOST)
     r.handlers.mock = CommandMock()
     loop = asyncio.get_event_loop()
     loop.run_until_complete(r.start())
@@ -127,15 +126,15 @@ async def stop_remote(r, route):
 
 @pytest.fixture(scope='session')
 def remote_routers():
-    Process(target=init_router, args=('remote', 0, EXCHANGE)).start()
-    Process(target=init_router, args=('remote', 1, EXCHANGE)).start()
+    Process(target=init_router, args=('remote', 0)).start()
+    Process(target=init_router, args=('remote', 1)).start()
 
 
 @pytest.yield_fixture(scope='session')
 def pika_router(remote_routers, event_loop):
     logging.critical(event_loop)
     blockon = event_loop.run_until_complete
-    r = init_router('local', exch=EXCHANGE, local=True)
+    r = init_router('local', local=True)
     blockon(asyncs.wait_true(lambda: r.ready))
     remote0 = normalize(r, 'remote:0')
     remote1 = normalize(r, 'remote:1')
