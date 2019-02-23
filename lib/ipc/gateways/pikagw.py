@@ -108,8 +108,7 @@ class TwistedPikaGateway(BasePikaGateway):
             self._on_message(*(yield dqueue.get()))
 
 
-class LoopingPikaGateway(BasePikaGateway):
-
+class BlockingPikaGateway(BasePikaGateway):
     def _connect(self):
         self.connection = pika.BlockingConnection(self.params)
         self.channel = channel = self.connection.channel()
@@ -120,11 +119,17 @@ class LoopingPikaGateway(BasePikaGateway):
         channel.basic_qos(prefetch_count=1)
         channel.basic_consume(self._on_message, no_ack=True, queue=self.queue)
         self.connected = True
-        self.loop = LoopingCall(self._process)
-        self.loop.start(0.1)
 
     def _process(self):
         self.connection.process_data_events()
+
+
+class LoopingPikaGateway(BlockingPikaGateway):
+
+    def _connect(self):
+        super()._connect()
+        self.loop = LoopingCall(self._process)
+        self.loop.start(0.1)
 
 
 if BigWorld:
