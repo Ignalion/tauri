@@ -11,7 +11,9 @@ ENTITY_COUNTER = count(START_ID)
 class Entity:
     def __init__(self):
         self.id = next(ENTITY_COUNTER)
-        log.info('Entity %s:%s created', self.id, self.__class__.__name__)
+        name = self.__class__.__name__
+        self.name = name
+        log.info('Entity %s:%s created', self.id, name)
 
     def _init(self, *args, **kwargs):
         log.info('Init of entity %s', self.id)
