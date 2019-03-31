@@ -4,7 +4,7 @@ from utils.log import init_logging
 from common.consts import MQ_URL, EXCHANGE
 from lib.ipc import get_router
 
-init_logging()
+init_logging('DEBUG')
 router = None
 
 
