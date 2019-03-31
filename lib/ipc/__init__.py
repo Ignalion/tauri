@@ -7,8 +7,6 @@ from .router import HeartbeatError, RemoteException,\
 from .gateways.pikagw import BasePikaGateway, PikaGateway
 from .util.funcs import repr_args
 
-MQ_EXCHANGE = 'ROOT'  # FIXME Remove this from here
-
 
 router_cache = {}
 
@@ -21,10 +19,6 @@ def get_router(component, pid=None, token=None, master=None, router_cls=Router,
     if own_route not in router_cache:
         master_route = (route.join(route.split(own_route)[0], master)
                         if master else None)
-
-        if issubclass(gw_cls, BasePikaGateway):
-            if not gw_kw.get('exchange'):
-                gw_kw['exchange'] = MQ_EXCHANGE
 
         logging.info('starting IPC router at [%s] <-> %s(%s)',
                      own_route, gw_cls.__name__, repr_args(**gw_kw))

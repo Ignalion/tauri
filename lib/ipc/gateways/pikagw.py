@@ -22,7 +22,6 @@ except ImportError:
 logging.getLogger('pika').setLevel(logging.INFO)
 log = logging.getLogger(__name__)
 
-MQ_HOST = 'ua1-hw88.pershastudia.org'
 TYPE_NAMES = swap(enum2dict(MTYPE))
 MAX_LOG_BODY_SIZE = 1024
 
@@ -36,17 +35,17 @@ def _get_metadata(body, key, default=None):
 
 class BasePikaGateway(BaseGateway):
 
-    def __init__(self, route, exchange):
+    def __init__(self, route, mq_host, exchange):
         super(BasePikaGateway, self).__init__()
         self.route = route
         self.exchange = exchange
-        self.params = pika.ConnectionParameters(host=MQ_HOST)
+        self.params = pika.ConnectionParameters(host=mq_host)
         self.connected = False
         self.connection = None
         self.channel = None
         self.queue = None
-        logging.debug('Initializing %s with route <%s> on exchange %s' %
-                      (self.__class__.__name__, route, exchange))
+        logging.debug('Initializing %s with route <%s> on exchange %s at host %s' %
+                      (self.__class__.__name__, route, exchange, mq_host))
         self._connect()
 
     def _connect(self):
@@ -109,8 +108,7 @@ class TwistedPikaGateway(BasePikaGateway):
             self._on_message(*(yield dqueue.get()))
 
 
-class LoopingPikaGateway(BasePikaGateway):
-
+class BlockingPikaGateway(BasePikaGateway):
     def _connect(self):
         self.connection = pika.BlockingConnection(self.params)
         self.channel = channel = self.connection.channel()
@@ -121,11 +119,17 @@ class LoopingPikaGateway(BasePikaGateway):
         channel.basic_qos(prefetch_count=1)
         channel.basic_consume(self._on_message, no_ack=True, queue=self.queue)
         self.connected = True
-        self.loop = LoopingCall(self._process)
-        self.loop.start(0.1)
 
     def _process(self):
         self.connection.process_data_events()
+
+
+class LoopingPikaGateway(BlockingPikaGateway):
+
+    def _connect(self):
+        super()._connect()
+        self.loop = LoopingCall(self._process)
+        self.loop.start(0.1)
 
 
 if BigWorld:
